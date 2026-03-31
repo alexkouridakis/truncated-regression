@@ -749,8 +749,6 @@ def make_default_demo_setup() -> ExperimentSetup:
     problem = TruncatedRegressionProblem(
         w_star= 20 * np.ones(10),
         truncation_intervals=[(-3.75, -3), (-2.5, -1.5), (-1, 1), (2, 3), (3.25, 4)],
-        # feature_means=np.asarray([np.zeros(10)]),
-        # feature_weights=np.asarray([1.0]),
         feature_means=np.asarray([
             np.zeros(10),
             -0.5 * np.ones(10), 
@@ -795,7 +793,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run truncated linear regression baselines and plot ||w_t - w*|| over time."
     )
-    parser.add_argument("--R", type=int, default=10)
+    parser.add_argument("--R", type=int, default=1)
     parser.add_argument("--T", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--step0", type=float, default=None)
