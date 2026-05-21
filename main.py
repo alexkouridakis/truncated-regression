@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import argparse
 import math
+import warnings
 from collections import OrderedDict, Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from scipy.stats import norm
 
+warnings.filterwarnings(
+    "ignore",
+    category=SyntaxWarning,
+    message=r".*invalid escape sequence.*",
+)
 
 Interval = Tuple[float, float]
 ALL_METHODS: Tuple[str, ...] = ("ols", "wrong_set", "true_set", "full")
@@ -644,7 +651,7 @@ def plot_comparison(
     style_by_label = {
         "OLS (no correction)": dict(linestyle=":", linewidth=LINE_WIDTH),
         "PSGD with wrong $S$": dict(linestyle="-.", linewidth=LINE_WIDTH),
-        "PSGD with true $S^\star$": dict(linestyle="-", linewidth=LINE_WIDTH), 
+        "PSGD with true $S^\star$": dict(linestyle="-", linewidth=LINE_WIDTH),
         "Full algorithm": dict(linestyle='--', linewidth=LINE_WIDTH),
     }
     fallback_styles = [
@@ -743,12 +750,143 @@ def print_experiment_summary(result: ComparisonResult) -> None:
         stats = result.trajectory_stats[method]
         print(f"  {METHOD_LABELS[method]:25s}: {stats.final_mean:.6f} +/- {stats.final_std:.6f}")
 
+def make_experiment_setup(
+    w_star: np.ndarray,
+    truncation_intervals: Sequence[Interval],
+    feature_weights: np.ndarray,
+    feature_means: np.ndarray,
+    feature_covariance: np.ndarray,
+    noise_std: float = 1.0,
+    wrong_intervals: Sequence[Interval] = [(-1.0, 1.0)],
+    warm_start_samples: int = 5_000,
+    warm_start_ridge: float = 1e-8,
+    set_learning_samples: int = 5_000,
+    set_learning_r: Optional[int] = None,
+    set_learning_r_scale: float = 1.0,
+    set_learning_max_removed_gaps: Optional[int] = None,
+    set_learning_min_interval_width: float = 1e-8,
+    psgd_radius: float = 10.0,
+    psgd_T: int = 4_500,
+    psgd_batch_size: int = 128,
+    psgd_step0: float = 20.0,
+    psgd_step_schedule: str = "inverse_sqrt",
+    psgd_grad_clip: Optional[float] = 10.0,
+    psgd_use_conditional_mean: bool = True,
+    psgd_verbose_every: int = 500
+) -> ExperimentSetup:
+    """Helper function to create an ExperimentSetup with custom parameters."""
+    problem = TruncatedRegressionProblem(
+        w_star=np.asarray(w_star, dtype=float),
+        truncation_intervals=normalize_intervals(truncation_intervals),
+        feature_weights=np.asarray(feature_weights, dtype=float),
+        feature_means=np.asarray(feature_means, dtype=float),
+        feature_covariance=np.asarray(feature_covariance, dtype=float),
+        noise_std=float(noise_std),
+    )
+    return ExperimentSetup(
+        problem=problem,
+        wrong_intervals=normalize_intervals(wrong_intervals),
+        warm_start=WarmStartConfig(n_samples=int(warm_start_samples), ridge=float(warm_start_ridge)),
+        set_learning=SetLearningConfig(
+            n_samples=int(set_learning_samples),
+            r=set_learning_r,
+            r_scale=float(set_learning_r_scale),
+            max_removed_gaps=set_learning_max_removed_gaps,
+            min_interval_width=float(set_learning_min_interval_width),
+        ),
+        psgd=PSGDConfig(
+            radius=float(psgd_radius),
+            T=int(psgd_T),
+            batch_size=int(psgd_batch_size),
+            step0=float(psgd_step0),
+            step_schedule=psgd_step_schedule,
+            grad_clip=psgd_grad_clip,
+            use_conditional_mean=psgd_use_conditional_mean,
+            verbose_every=int(psgd_verbose_every),
+        ),
+    )
+
+
+def make_experiment_setup_from_yaml(config_path: str) -> ExperimentSetup:
+    """Load an experiment setup from a YAML config file and override defaults only where provided."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    setup = make_default_demo_setup()
+    problem_config = config.get("problem", {})
+    warm_start_config = config.get("warm_start", {})
+    set_learning_config = config.get("set_learning", {})
+    psgd_config = config.get("psgd", {})
+
+    problem_kwargs: Dict[str, Any] = {
+        "w_star": setup.problem.w_star,
+        "truncation_intervals": setup.problem.truncation_intervals,
+        "feature_weights": setup.problem.feature_weights,
+        "feature_means": setup.problem.feature_means,
+        "feature_covariance": setup.problem.feature_covariance,
+        "noise_std": setup.problem.noise_std,
+    }
+
+    if "w_star" in problem_config:
+        problem_kwargs["w_star"] = np.asarray(problem_config["w_star"], dtype=float)
+    if "truncation_intervals" in problem_config:
+        problem_kwargs["truncation_intervals"] = normalize_intervals(problem_config["truncation_intervals"])
+    if "feature_weights" in problem_config:
+        problem_kwargs["feature_weights"] = np.asarray(problem_config["feature_weights"], dtype=float)
+    if "feature_means" in problem_config:
+        problem_kwargs["feature_means"] = np.asarray(problem_config["feature_means"], dtype=float)
+    if "feature_covariance" in problem_config:
+        problem_kwargs["feature_covariance"] = np.asarray(problem_config["feature_covariance"], dtype=float)
+    if "noise_std" in problem_config:
+        problem_kwargs["noise_std"] = float(problem_config["noise_std"])
+
+    setup.problem = TruncatedRegressionProblem(**problem_kwargs)
+
+    if "wrong_intervals" in config:
+        setup.wrong_intervals = normalize_intervals(config["wrong_intervals"])
+
+    if "n_samples" in warm_start_config:
+        setup.warm_start.n_samples = int(warm_start_config["n_samples"])
+    if "ridge" in warm_start_config:
+        setup.warm_start.ridge = float(warm_start_config["ridge"])
+
+    if "n_samples" in set_learning_config:
+        setup.set_learning.n_samples = int(set_learning_config["n_samples"])
+    if "r" in set_learning_config:
+        setup.set_learning.r = set_learning_config["r"]
+    if "r_scale" in set_learning_config:
+        setup.set_learning.r_scale = float(set_learning_config["r_scale"])
+    if "max_removed_gaps" in set_learning_config:
+        setup.set_learning.max_removed_gaps = set_learning_config["max_removed_gaps"]
+    if "min_interval_width" in set_learning_config:
+        setup.set_learning.min_interval_width = float(set_learning_config["min_interval_width"])
+
+    if "radius" in psgd_config:
+        setup.psgd.radius = float(psgd_config["radius"])
+    if "T" in psgd_config:
+        setup.psgd.T = int(psgd_config["T"])
+    if "batch_size" in psgd_config:
+        setup.psgd.batch_size = int(psgd_config["batch_size"])
+    if "step0" in psgd_config:
+        setup.psgd.step0 = float(psgd_config["step0"])
+    if "step_schedule" in psgd_config:
+        setup.psgd.step_schedule = str(psgd_config["step_schedule"])
+    if "grad_clip" in psgd_config:
+        setup.psgd.grad_clip = psgd_config["grad_clip"]
+    if "use_conditional_mean" in psgd_config:
+        setup.psgd.use_conditional_mean = bool(psgd_config["use_conditional_mean"])
+    if "verbose_every" in psgd_config:
+        setup.psgd.verbose_every = int(psgd_config["verbose_every"])
+
+    return setup
+
 
 def make_default_demo_setup() -> ExperimentSetup:
     """Default problem with clearly separated baselines."""
-    problem = TruncatedRegressionProblem(
-        w_star= 20 * np.ones(10),
+    return make_experiment_setup(
+        w_star=20 * np.ones(10),
         truncation_intervals=[(-3.75, -3), (-2.5, -1.5), (-1, 1), (2, 3), (3.25, 4)],
+        feature_weights=np.asarray([0.25, 0.3, 0.15, 0.1, 0.2]),
         feature_means=np.asarray([
             np.zeros(10),
             -0.5 * np.ones(10), 
@@ -756,31 +894,9 @@ def make_default_demo_setup() -> ExperimentSetup:
             0.5 * np.concatenate([np.ones(5), -np.ones(5)], axis=0),
             0.5 * np.concatenate([-np.ones(5), np.ones(5)], axis=0)
         ]),
-        feature_weights=np.asarray([0.25, 0.3, 0.15, 0.1, 0.2]),
         feature_covariance=np.eye(10),
         noise_std=1.0,
-    )
-    return ExperimentSetup(
-        problem=problem,
-        wrong_intervals=[(-5.0, 5.0)],
-        warm_start=WarmStartConfig(n_samples=5_000, ridge=1e-8),
-        set_learning=SetLearningConfig(
-            n_samples=5_000,
-            r=None,
-            r_scale=1.0,
-            max_removed_gaps=30,
-            min_interval_width=1e-8,
-        ),
-        psgd=PSGDConfig(
-            radius=10,
-            T=4_500,
-            batch_size=128,
-            step0=20,
-            step_schedule="inverse_sqrt",
-            grad_clip=10.0,
-            use_conditional_mean=True,
-            verbose_every=500,
-        ),
+        wrong_intervals=[(-5.0, 5.0)]
     )
 
 
@@ -793,11 +909,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run truncated linear regression baselines and plot ||w_t - w*|| over time."
     )
-    parser.add_argument("--R", type=int, default=1)
-    parser.add_argument("--T", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--step0", type=float, default=None)
-    parser.add_argument("--verbose-every", type=int, default=None)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML configuration file for the experiment setup.",
+    )
+    parser.add_argument(
+        "--R", 
+        type=int, 
+        default=1,
+        help="Number of independent reruns of the experiment.",
+    )
+    parser.add_argument(
+        "--T", 
+        type=int, 
+        default=None,
+        help="Number of PSGD iterations per rerun."
+    )
+    parser.add_argument(
+        "--verbose-every", 
+        type=int, 
+        default=None,
+        help="Print PSGD status every this many iterations."
+    )
     parser.add_argument(
         "--methods",
         type=str,
@@ -808,20 +943,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--output-plot",
         type=str,
         default="truncated_regression_comparison.png",
+        help="Path to save the output plot comparing methods.",
     )
-    parser.add_argument("--no-plot", action="store_true")
+    parser.add_argument(
+        "--no-plot", 
+        action="store_true",
+        help="If set, do not generate comparison plot.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    setup = make_default_demo_setup()
+    if args.config is not None:
+        setup = make_experiment_setup_from_yaml(args.config)
+    else:
+        setup = make_default_demo_setup()
     if args.T is not None:
         setup.psgd.T = int(args.T)
-    if args.batch_size is not None:
-        setup.psgd.batch_size = int(args.batch_size)
-    if args.step0 is not None:
-        setup.psgd.step0 = float(args.step0)
     if args.verbose_every is not None:
         setup.psgd.verbose_every = int(args.verbose_every)
     methods = parse_methods_arg(args.methods)
