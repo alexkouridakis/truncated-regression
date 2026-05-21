@@ -1,11 +1,12 @@
 problem:
-  w_star: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
-  truncation_intervals:
+  w_star: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20] # The parameter vector we want to estimate
+  truncation_intervals: # The intervals defining the truncation set
     - [-3.75, -3]
     - [-2.5, -1.5]
     - [-1, 1]
     - [2, 3]
-    - [3.25, 4]
+    - [3.25, 4] 
+  # The feature distribution is a mixture of Gaussians; feature_weights are the mixture weights, feature_means are the means of the Gaussians, and feature_covariance is the covariance matrix (same across all mixture components).
   feature_weights: [0.25, 0.3, 0.15, 0.1, 0.2]
   feature_means:
     - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -23,28 +24,33 @@ problem:
                       [0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
                       [0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
                       [0, 0, 0, 0, 0, 0, 0, 0, 0, 1]]
-  noise_std: 1.0
+  noise_std: 1.0 # The standard deviation of the noise in the linear regression model
+
 
 wrong_intervals:
-  - [-5.0, 5.0]
+  - [-5.0, 5.0] # The incorrect truncation set used by the "PSGD with wrong S" method. No need to specify if not using this method.
+
+# To use default configuration for the warm start, set learning, and psgd procedures, simply do not include the relevant sections below.
 
 warm_start:
-  n_samples: 5000
+  n_samples: 5000 # How many samples to use for the warm start OLS estimator
   ridge: 1e-8
 
 set_learning:
-  n_samples: 5000
-  r: null
+  n_samples: 5000 # How many samples to use for the set learning procedure
+  # Parameters below control how many gaps to remove when learning the truncation set.
+  r: null 
   r_scale: 1.0
   max_removed_gaps: 30
   min_interval_width: 1e-8
 
 psgd:
-  radius: 10.0
-  T: 4500
-  batch_size: 128
-  step0: 20.0
-  step_schedule: inverse_sqrt
+  radius: 10.0 # Radius of projection set for PSGD
+  T: 4500 # Number of PSGD iterations
+  batch_size: 128 # Batch size for minibatch gradient estimates
+  step0: 20.0 # Initial step size
+  step_schedule: inverse_sqrt # Rate of decay for step size; can be "constant", "inverse_sqrt", or "inverse"
+  # Miscellaneous parameters for PSGD
   grad_clip: 10.0
   use_conditional_mean: true
   verbose_every: 500
